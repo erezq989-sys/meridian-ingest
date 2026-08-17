@@ -53,22 +53,25 @@ def run(layer: str, job: str, window: str) -> None:
         if job != "station-daily":
             print(f"ERROR: gold transform expects station-daily job", file=sys.stderr)
             sys.exit(1)
-        # Extract market from... we need to figure this out
-        # For now, assume we handle all markets
-        # Actually the spec doesn't specify how gold gets the market
-        # Looking at the spec again: "just run transform-to-gold   station-daily 2026-06-02"
-        # So gold transforms from silver, and we should transform all markets?
-        # Or does gold only exist per-market per-day?
-        # Let me re-read... "station-daily" is a FACT named by grain
-        # So the gold job is named for what it produces, not the market
-        # I'll need to transform all markets for this day
         db.init_schema()
-        for market in ["jc", "nyc"]:
-            try:
+        # Detect markets that have silver data for this day
+        # Then transform to gold for each market
+        day_date = window  # window is already validated to be YYYY-MM-DD
+        with db.get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT market FROM silver_trips
+                    WHERE DATE(start_time) = %s OR DATE(end_time) = %s
+                    """,
+                    (day_date, day_date)
+                )
+                markets = [row[0] for row in cur.fetchall()]
+        
+        if markets:
+            for market in markets:
                 transform.transform_to_gold(market, window)
-            except Exception:
-                # Market may not have data for this window
-                pass
+        # If no silver data exists for this day, that's OK - just no gold to build
     
     else:
         print(f"ERROR: Unknown layer {layer}", file=sys.stderr)

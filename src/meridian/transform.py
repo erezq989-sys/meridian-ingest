@@ -91,9 +91,6 @@ def transform_to_gold(market: str, day: str) -> None:
     
     with db.get_db() as conn:
         with conn.cursor() as cur:
-            # Extract month from day for filtering silver data
-            month = day[:7]  # YYYY-MM
-            
             # Count departures per station
             cur.execute(
                 """
@@ -106,8 +103,10 @@ def transform_to_gold(market: str, day: str) -> None:
             )
             
             departures = {}
-            for station_id, trip_date, count in cur.fetchall():
-                departures[station_id] = count
+            for row in cur.fetchall():
+                if row is not None:
+                    station_id, trip_date, count = row
+                    departures[station_id] = count
             
             # Count arrivals per station
             cur.execute(
@@ -121,29 +120,36 @@ def transform_to_gold(market: str, day: str) -> None:
             )
             
             arrivals = {}
-            for station_id, trip_date, count in cur.fetchall():
-                arrivals[station_id] = count
+            for row in cur.fetchall():
+                if row is not None:
+                    station_id, trip_date, count = row
+                    arrivals[station_id] = count
             
-            # Merge all stations
+            # Merge all stations (only if there's activity)
             all_stations = set(departures.keys()) | set(arrivals.keys())
             
-            # Upsert into gold layer
+            # Upsert into gold layer (only for stations with activity)
             for station_id in all_stations:
-                cur.execute(
-                    """
-                    INSERT INTO station_daily_trips (market, day, station_id, departures, arrivals)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (market, day, station_id) DO UPDATE SET
-                        departures = %s,
-                        arrivals = %s
-                    """,
-                    (
-                        market,
-                        day_date,
-                        station_id,
-                        departures.get(station_id, 0),
-                        arrivals.get(station_id, 0),
-                        departures.get(station_id, 0),
-                        arrivals.get(station_id, 0),
+                dep_count = departures.get(station_id, 0)
+                arr_count = arrivals.get(station_id, 0)
+                
+                # Only insert if there's activity
+                if dep_count > 0 or arr_count > 0:
+                    cur.execute(
+                        """
+                        INSERT INTO station_daily_trips (market, day, station_id, departures, arrivals)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (market, day, station_id) DO UPDATE SET
+                            departures = %s,
+                            arrivals = %s
+                        """,
+                        (
+                            market,
+                            day_date,
+                            station_id,
+                            dep_count,
+                            arr_count,
+                            dep_count,
+                            arr_count,
+                        )
                     )
-                )
