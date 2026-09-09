@@ -13,7 +13,7 @@ def inspect_bronze(market: str, window: str) -> dict[str, Any]:
                 """
                 SELECT COUNT(DISTINCT source_key) as objects, COUNT(*) as rows
                 FROM bronze_trips
-                WHERE market = %s AND window = %s
+                WHERE market = %s AND "window" = %s
                 """,
                 (market, window)
             )
@@ -39,19 +39,20 @@ def inspect_silver(market: str, window: str) -> dict[str, Any]:
                 """
                 SELECT COUNT(*) as rows
                 FROM silver_trips
-                WHERE market = %s AND window = %s
+                WHERE market = %s AND "window" = %s
                 """,
                 (market, window)
             )
             
-            rows = cur.fetchone()[0] if cur.fetchone() else 0
+            row = cur.fetchone()
+            rows = row[0] if row else 0
             
             # Quarantine reasons
             cur.execute(
                 """
                 SELECT reason, COUNT(*) as count
                 FROM quarantine
-                WHERE market = %s AND window = %s
+                WHERE market = %s AND "window" = %s
                 GROUP BY reason
                 ORDER BY count DESC
                 """,

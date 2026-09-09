@@ -66,6 +66,16 @@ def test_validate_trip_missing_station():
         trip.validate_trip(invalid_trip)
 
 
+def test_init_schema_creates_tables():
+    """Schema initialization should succeed without reserved-keyword conflicts."""
+    db.init_schema()
+
+    with db.get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.bronze_trips')")
+            assert cur.fetchone()[0] == "bronze_trips"
+
+
 def test_inspect_bronze_empty(clean_db):
     """Test inspect on empty bronze layer."""
     result = report.inspect_bronze("jc", "2026-06")
@@ -81,7 +91,7 @@ def test_inspect_silver_with_quarantine(clean_db):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO bronze_trips (market, window, source_key, source_timestamp, raw_row)
+                INSERT INTO bronze_trips (market, "window", source_key, source_timestamp, raw_row)
                 VALUES (%s, %s, %s, %s, %s)
                 """,
                 ("jc", "2026-06", "test.zip", datetime.now(), json.dumps({"test": "data"}))
@@ -90,7 +100,7 @@ def test_inspect_silver_with_quarantine(clean_db):
             # Manually insert a quarantine
             cur.execute(
                 """
-                INSERT INTO quarantine (market, window, reason, raw_row)
+                INSERT INTO quarantine (market, "window", reason, raw_row)
                 VALUES (%s, %s, %s, %s)
                 """,
                 ("jc", "2026-06", "never_docked", json.dumps({"test": "data"}))

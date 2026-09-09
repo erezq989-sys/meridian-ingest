@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -30,8 +28,11 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+      - bronze_data:/var/lib/meridian/bronze
+      - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /app
     command: tail -f /dev/null
 
 volumes:
   postgres_data:
+  bronze_data:

@@ -39,22 +39,25 @@ def init_schema() -> None:
                 CREATE TABLE IF NOT EXISTS bronze_trips (
                     id BIGSERIAL PRIMARY KEY,
                     market TEXT NOT NULL,
-                    window TEXT NOT NULL,
+                    "window" TEXT NOT NULL,
                     source_key TEXT NOT NULL,
                     source_timestamp TIMESTAMP NOT NULL,
                     raw_row JSONB NOT NULL,
-                    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (market, window, source_key, source_timestamp, raw_row::text)
+                    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_bronze_market_window ON bronze_trips (market, window)")
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_bronze_unique_payload
+                ON bronze_trips (market, "window", source_key, source_timestamp, ((raw_row)::text))
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_bronze_market_window ON bronze_trips (market, \"window\")")
             
             # Silver layer: conformed trips
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS silver_trips (
                     id BIGSERIAL PRIMARY KEY,
                     market TEXT NOT NULL,
-                    window TEXT NOT NULL,
+                    "window" TEXT NOT NULL,
                     trip_id TEXT,
                     start_station_id TEXT NOT NULL,
                     end_station_id TEXT NOT NULL,
@@ -64,10 +67,10 @@ def init_schema() -> None:
                     member_birth_year INT,
                     member_gender INT,
                     bike_id TEXT,
-                    UNIQUE (market, window, trip_id)
+                    UNIQUE (market, "window", trip_id)
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_silver_market_window ON silver_trips (market, window)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_silver_market_window ON silver_trips (market, \"window\")")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_silver_times ON silver_trips (start_time, end_time)")
             
             # Quarantine layer: rejected trips with reasons
@@ -75,13 +78,13 @@ def init_schema() -> None:
                 CREATE TABLE IF NOT EXISTS quarantine (
                     id BIGSERIAL PRIMARY KEY,
                     market TEXT NOT NULL,
-                    window TEXT NOT NULL,
+                    "window" TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     raw_row JSONB NOT NULL,
                     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_market_window ON quarantine (market, window)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_market_window ON quarantine (market, \"window\")")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_reason ON quarantine (reason)")
             
             # Gold layer: station-day facts

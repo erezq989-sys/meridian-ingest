@@ -20,7 +20,7 @@ def transform_to_silver(market: str, window: str) -> None:
             cur.execute(
                 """
                 SELECT id, raw_row FROM bronze_trips
-                WHERE market = %s AND window = %s
+                WHERE market = %s AND "window" = %s
                 """,
                 (market, window)
             )
@@ -48,7 +48,7 @@ def transform_to_silver(market: str, window: str) -> None:
                     
                     cur.execute(
                         """
-                        INSERT INTO silver_trips (market, window, trip_id, start_station_id, end_station_id,
+                        INSERT INTO silver_trips (market, "window", trip_id, start_station_id, end_station_id,
                                                    start_time, end_time, user_type, member_birth_year, member_gender, bike_id)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT DO NOTHING
@@ -73,7 +73,7 @@ def transform_to_silver(market: str, window: str) -> None:
                     reason = e.message.split(":")[0] if ":" in e.message else e.message
                     cur.execute(
                         """
-                        INSERT INTO quarantine (market, window, reason, raw_row)
+                        INSERT INTO quarantine (market, "window", reason, raw_row)
                         VALUES (%s, %s, %s, %s)
                         """,
                         (market, window, reason, raw_row_json)

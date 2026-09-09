@@ -1,21 +1,21 @@
-set shell := ["powershell", "-Command"]
+set shell := ["bash", "-cu"]
 
 # Start the stack
 up:
-    docker compose up -d
+    if command -v docker >/dev/null 2>&1; then docker compose up -d --remove-orphans; else docker-compose up -d --remove-orphans; fi
 
 # Stop the stack
 down:
-    docker compose down
+    if command -v docker >/dev/null 2>&1; then docker compose down -v --remove-orphans; else docker-compose down -v --remove-orphans; fi
 
 # Run a job: layer, job name, window
 run layer job window:
-    docker compose exec app python -m meridian.cli run {{layer}} {{job}} {{window}}
+    if command -v docker >/dev/null 2>&1; then docker compose exec app python -m meridian.cli run {{layer}} {{job}} {{window}}; else docker-compose exec app python -m meridian.cli run {{layer}} {{job}} {{window}}; fi
 
 # Inspect a layer
 inspect layer job window:
-    docker compose exec app python -m meridian.cli inspect {{layer}} {{job}} {{window}}
+    if command -v docker >/dev/null 2>&1; then docker compose exec app python -m meridian.cli inspect {{layer}} {{job}} {{window}}; else docker-compose exec app python -m meridian.cli inspect {{layer}} {{job}} {{window}}; fi
 
 # Query the business question
 report question market station day:
-    docker compose exec app python -m meridian.cli report {{question}} {{market}} {{station}} {{day}}
+    if command -v docker >/dev/null 2>&1; then docker compose exec app python -m meridian.cli report {{question}} {{market}} {{station}} {{day}}; else docker-compose exec app python -m meridian.cli report {{question}} {{market}} {{station}} {{day}}; fi

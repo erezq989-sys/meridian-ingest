@@ -86,7 +86,7 @@ def ingest_to_bronze(market: str, window: str) -> None:
                                 raw_json = json.dumps(row)
                                 cur.execute(
                                     """
-                                    INSERT INTO bronze_trips (market, window, source_key, source_timestamp, raw_row)
+                                    INSERT INTO bronze_trips (market, "window", source_key, source_timestamp, raw_row)
                                     VALUES (%s, %s, %s, %s, %s)
                                     ON CONFLICT DO NOTHING
                                     """,
