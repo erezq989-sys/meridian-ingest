@@ -1,6 +1,6 @@
 """Transform jobs: silver (conformance) and gold (facts)."""
-from datetime import datetime, date
-from typing import Any
+import json
+from datetime import datetime
 
 import dateutil.parser
 
@@ -15,44 +15,40 @@ def transform_to_silver(market: str, window: str) -> None:
     A trip is valid if it has start_station_id, end_station_id, start_time, end_time.
     """
     with db.get_db() as conn:
-        with conn.cursor() as cur:
-            # Get all raw rows for this market/window from bronze
-            cur.execute(
+        with conn.cursor() as write_cur:
+            write_cur.execute(
+                'DELETE FROM silver_trips WHERE market = %s AND "window" = %s',
+                (market, window),
+            )
+            write_cur.execute(
+                'DELETE FROM quarantine WHERE market = %s AND "window" = %s',
+                (market, window),
+            )
+
+        with conn.cursor(name="silver_source") as read_cur, conn.cursor() as write_cur:
+            read_cur.execute(
                 """
                 SELECT id, raw_row FROM bronze_trips
                 WHERE market = %s AND "window" = %s
+                ORDER BY id
                 """,
                 (market, window)
             )
-            
-            rows = cur.fetchall()
-            
-            for bronze_id, raw_row_json in rows:
+            valid_rows: list[tuple[object, ...]] = []
+            rejected_rows: list[tuple[object, ...]] = []
+
+            for bronze_id, raw_row_json in read_cur:
                 raw_row = raw_row_json
-                
-                # Try to normalize and validate
                 try:
-                    # Detect schema from the raw row keys
                     schema = detect_schema(list(raw_row.keys()))
                     normalized = normalize_row(raw_row, schema)
                     validate_trip(normalized)
-                    
-                    # Trip is valid, insert into silver
                     start_time_str = normalized.get("start_time", "")
                     end_time_str = normalized.get("stop_time") or normalized.get("end_time", "")
-                    
                     start_time = dateutil.parser.parse(start_time_str)
                     end_time = dateutil.parser.parse(end_time_str)
-                    
                     trip_id = normalized.get("trip_id") or f"{bronze_id}"
-                    
-                    cur.execute(
-                        """
-                        INSERT INTO silver_trips (market, "window", trip_id, start_station_id, end_station_id,
-                                                   start_time, end_time, user_type, member_birth_year, member_gender, bike_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT DO NOTHING
-                        """,
+                    valid_rows.append(
                         (
                             market,
                             window,
@@ -67,17 +63,54 @@ def transform_to_silver(market: str, window: str) -> None:
                             normalized.get("bike_id"),
                         )
                     )
-                
-                except TripValidationError as e:
-                    # Quarantine the reject
-                    reason = e.message.split(":")[0] if ":" in e.message else e.message
-                    cur.execute(
+                except (TripValidationError, ValueError, TypeError):
+                    rejected_rows.append(
+                        (market, window, "never_docked", json.dumps(raw_row))
+                    )
+
+                if len(valid_rows) >= 5_000:
+                    write_cur.executemany(
+                        """
+                        INSERT INTO silver_trips
+                            (market, "window", trip_id, start_station_id, end_station_id,
+                             start_time, end_time, user_type, member_birth_year,
+                             member_gender, bike_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        valid_rows,
+                    )
+                    valid_rows.clear()
+                if len(rejected_rows) >= 5_000:
+                    write_cur.executemany(
                         """
                         INSERT INTO quarantine (market, "window", reason, raw_row)
                         VALUES (%s, %s, %s, %s)
                         """,
-                        (market, window, reason, raw_row_json)
+                        rejected_rows,
                     )
+                    rejected_rows.clear()
+
+            if valid_rows:
+                write_cur.executemany(
+                    """
+                    INSERT INTO silver_trips
+                        (market, "window", trip_id, start_station_id, end_station_id,
+                         start_time, end_time, user_type, member_birth_year,
+                         member_gender, bike_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    valid_rows,
+                )
+            if rejected_rows:
+                write_cur.executemany(
+                    """
+                    INSERT INTO quarantine (market, "window", reason, raw_row)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    rejected_rows,
+                )
 
 
 def transform_to_gold(market: str, day: str) -> None:
@@ -91,6 +124,10 @@ def transform_to_gold(market: str, day: str) -> None:
     
     with db.get_db() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM station_daily_trips WHERE market = %s AND day = %s",
+                (market, day_date),
+            )
             # Count departures per station
             cur.execute(
                 """

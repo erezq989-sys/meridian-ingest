@@ -1,94 +1,151 @@
-"""Ingest job: fetch from S3 and land in bronze layer."""
+"""Ingest job: fetch from S3 and land in the bronze layer."""
 import csv
 import io
 import json
 import zipfile
 from datetime import datetime
-from typing import Any
+from typing import NamedTuple
 
 import requests
 
 from meridian import db, s3
-from meridian.trip import detect_schema, normalize_row
+
+
+INSERT_BATCH_SIZE = 5_000
+
+
+class ArchiveMember(NamedTuple):
+    source_key: str
+    archive: bytes
+    filename: str
+    date_time: tuple[int, int, int, int, int, int]
+
+
+def _download_latest_export(objects: list[s3.S3Object], window: str) -> list[ArchiveMember]:
+    """Choose one complete publisher export using ZIP member timestamps."""
+    candidates: list[ArchiveMember] = []
+    for obj in objects:
+        if not obj.key.lower().endswith(".zip"):
+            continue
+        response = requests.get(
+            f"https://s3.amazonaws.com/tripdata/{obj.key}", timeout=120
+        )
+        response.raise_for_status()
+        archive = response.content
+        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+            csv_names = [
+                info.filename
+                for info in zf.infolist()
+                if not info.is_dir()
+                and info.filename.lower().endswith(".csv")
+                and "__MACOSX" not in info.filename.split("/")
+                and not info.filename.rsplit("/", 1)[-1].startswith("._")
+            ]
+            selected = set(s3.select_month_members(csv_names, window))
+            for info in zf.infolist():
+                if info.filename in selected:
+                    candidates.append(
+                        ArchiveMember(obj.key, archive, info.filename, info.date_time)
+                    )
+
+    if not candidates:
+        return []
+
+    latest_date = max(datetime(*item.date_time).date() for item in candidates)
+    latest = [
+        item for item in candidates
+        if datetime(*item.date_time).date() == latest_date
+    ]
+
+    # Keep distinct split parts, but only one directory copy per basename.
+    unique: dict[str, ArchiveMember] = {}
+    for item in latest:
+        basename = item.filename.rsplit("/", 1)[-1]
+        current = unique.get(basename)
+        if current is None or (item.date_time, item.filename) > (
+            current.date_time,
+            current.filename,
+        ):
+            unique[basename] = item
+    return [unique[name] for name in sorted(unique)]
+
+
+def _insert_rows(cur: object, rows: list[tuple[object, ...]]) -> None:
+    """Insert one bounded bronze batch."""
+    cur.executemany(  # type: ignore[attr-defined]
+        """
+        INSERT INTO bronze_trips
+            (market, "window", source_key, source_timestamp,
+             raw_row, bronze_object_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT DO NOTHING
+        """,
+        rows,
+    )
 
 
 def ingest_to_bronze(market: str, window: str) -> None:
-    """
-    Ingest trips from S3 for a market and month window into bronze layer.
-    
-    Bronze layer: store the raw bytes exactly as published, with provenance.
-    This job must handle:
-    - Schema drift (old vs new column names)
-    - Multiple export runs of same month (choose latest by archive timestamp)
-    - Files inside yearly zips (e.g., April inside 2018.zip)
-    
-    Args:
-        market: "jc" or "nyc"
-        window: ISO 8601 month like "2026-06"
-    """
+    """Land one complete market/month export with exact source bytes."""
     db.init_schema()
-    
-    # List S3 objects
-    all_objects = s3.list_s3_objects()
-    market_objects = s3.filter_by_market(all_objects, market)
-    month_objects = s3.get_month_files(market_objects, window)
-    
-    if not month_objects:
+    objects = s3.get_month_files(
+        s3.filter_by_market(s3.list_s3_objects(), market), window
+    )
+    if not objects:
         raise ValueError(f"No files found for {market} in {window}")
-    
-    # Select the latest export run (by timestamp)
-    # This ensures we don't load the same month multiple times from different exports
-    month_objects = s3.select_export_run(month_objects)
-    
-    # Download and extract CSVs
+    members = _download_latest_export(objects, window)
+    if not members:
+        raise ValueError(f"No CSV files found for {market} in {window}")
+
     with db.get_db() as conn:
         with conn.cursor() as cur:
-            for obj in month_objects:
-                if not obj.key.endswith(".zip"):
+            for member in members:
+                with zipfile.ZipFile(io.BytesIO(member.archive)) as zf:
+                    csv_bytes = zf.read(member.filename)
+                source_timestamp = datetime(*member.date_time)
+                cur.execute(
+                    """
+                    INSERT INTO bronze_objects
+                        (source_key, source_member, source_timestamp, raw_bytes)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (source_key, source_member, source_timestamp)
+                    DO UPDATE SET raw_bytes = EXCLUDED.raw_bytes
+                    RETURNING id
+                    """,
+                    (member.source_key, member.filename, source_timestamp, csv_bytes),
+                )
+                object_row = cur.fetchone()
+                if object_row is None:
+                    raise RuntimeError("failed to persist bronze source object")
+                bronze_object_id = object_row[0]
+
+                text_stream = io.TextIOWrapper(
+                    io.BytesIO(csv_bytes), encoding="utf-8", errors="replace"
+                )
+                reader = csv.DictReader(text_stream)
+                if reader.fieldnames is None:
                     continue
-                
-                # Download the zip from S3
-                url = f"https://s3.amazonaws.com/tripdata/{obj.key}"
-                resp = requests.get(url, timeout=120)
-                resp.raise_for_status()
-                
-                # Extract and process CSVs in the zip
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-                    # Process files in the zip
-                    for file_info in zf.filelist:
-                        filename = file_info.filename
-                        
-                        # Skip directories
-                        if filename.endswith("/"):
-                            continue
-                        
-                        # Skip non-CSV files
-                        if not filename.lower().endswith(".csv"):
-                            continue
-                        
-                        # For root-level monthly files, process them
-                        # For yearly files with subdirectories, prefer newer exports
-                        # For now: load root-level CSVs and root directory CSVs
-                        # The select_export_run filter should have already chosen the latest run
-                        
-                        # Read CSV with proper parsing
-                        with zf.open(filename) as f:
-                            text_stream = io.TextIOWrapper(f, encoding="utf-8")
-                            reader = csv.DictReader(text_stream)
-                            
-                            if reader.fieldnames is None:
-                                continue
-                            
-                            headers = list(reader.fieldnames)
-                            
-                            for row in reader:
-                                # Store raw row in bronze
-                                raw_json = json.dumps(row)
-                                cur.execute(
-                                    """
-                                    INSERT INTO bronze_trips (market, "window", source_key, source_timestamp, raw_row)
-                                    VALUES (%s, %s, %s, %s, %s)
-                                    ON CONFLICT DO NOTHING
-                                    """,
-                                    (market, window, obj.key, obj.last_modified, raw_json)
-                                )
+
+                insert_rows: list[tuple[object, ...]] = []
+                for row in reader:
+                    raw_json = json.dumps(
+                        {
+                            key.replace("\x00", "") if isinstance(key, str) else key:
+                            value.replace("\x00", "") if isinstance(value, str) else value
+                            for key, value in row.items()
+                        }
+                    )
+                    insert_rows.append(
+                        (
+                            market,
+                            window,
+                            member.source_key,
+                            source_timestamp,
+                            raw_json,
+                            bronze_object_id,
+                        )
+                    )
+                    if len(insert_rows) == INSERT_BATCH_SIZE:
+                        _insert_rows(cur, insert_rows)
+                        insert_rows.clear()
+                if insert_rows:
+                    _insert_rows(cur, insert_rows)

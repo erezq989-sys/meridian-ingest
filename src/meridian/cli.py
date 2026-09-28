@@ -63,8 +63,10 @@ def run(layer: str, job: str, window: str) -> None:
                     """
                     SELECT DISTINCT market FROM silver_trips
                     WHERE DATE(start_time) = %s OR DATE(end_time) = %s
+                    UNION
+                    SELECT market FROM station_daily_trips WHERE day = %s
                     """,
-                    (day_date, day_date)
+                    (day_date, day_date, day_date)
                 )
                 markets = [row[0] for row in cur.fetchall()]
         

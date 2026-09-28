@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 
 from tests.just_cli import just_down, just_up
-from tests.stack_probe import postgres_is_down, postgres_is_up, volume_exists, volume_is_gone
+from tests.stack_probe import postgres_is_down, postgres_is_up, volume_exists
 
 
 def wait_for(predicate: Callable[[], bool], iterations: int = 10, delay: int = 2) -> bool:
@@ -40,8 +40,8 @@ def test_down_takes_postgres_down(restored_stack: None, dsn: str) -> None:
     assert wait_for(lambda: postgres_is_down(dsn)), f"something is still listening at {dsn}"
 
 
-def test_down_deletes_the_bronze_data_volume(restored_stack: None, bronze_volume: str) -> None:
+def test_down_preserves_the_bronze_data_volume(restored_stack: None, bronze_volume: str) -> None:
     assert volume_exists(bronze_volume), "the volume was not there to begin with"
     result = just_down()
     assert result.exit_code == 0, result.describe()
-    assert wait_for(lambda: volume_is_gone(bronze_volume)), f"volume {bronze_volume} survived `just down`"
+    assert volume_exists(bronze_volume), f"volume {bronze_volume} was deleted by `just down`"
