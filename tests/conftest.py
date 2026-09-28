@@ -65,4 +65,5 @@ def restored_stack() -> None:
     result = just_up()
     assert result.exit_code == 0, result.describe()
     yield
-    just_down()
+    # Leave the stack available for integration tests that run later in the suite.
+    just_up()

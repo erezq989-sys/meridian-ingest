@@ -10,6 +10,9 @@ from meridian import db, trip, report
 def clean_db():
     """Set up and tear down test database."""
     db.init_schema()
+    with db.get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE bronze_trips, silver_trips, quarantine, station_daily_trips")
     yield
     # Cleanup: truncate tables
     with db.get_db() as conn:

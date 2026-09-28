@@ -34,7 +34,21 @@ def init_schema() -> None:
     """Initialize database schema."""
     with get_db() as conn:
         with conn.cursor() as cur:
+            # Serialize idempotent schema migrations when commands start together.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('meridian_schema'))")
+
             # Bronze layer: raw published bytes
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bronze_objects (
+                    id BIGSERIAL PRIMARY KEY,
+                    source_key TEXT NOT NULL,
+                    source_member TEXT NOT NULL,
+                    source_timestamp TIMESTAMP NOT NULL,
+                    raw_bytes BYTEA NOT NULL,
+                    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (source_key, source_member, source_timestamp)
+                )
+            """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bronze_trips (
                     id BIGSERIAL PRIMARY KEY,
@@ -43,8 +57,14 @@ def init_schema() -> None:
                     source_key TEXT NOT NULL,
                     source_timestamp TIMESTAMP NOT NULL,
                     raw_row JSONB NOT NULL,
+                    bronze_object_id BIGINT REFERENCES bronze_objects(id),
                     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
+            """)
+            cur.execute("""
+                ALTER TABLE bronze_trips
+                ADD COLUMN IF NOT EXISTS bronze_object_id BIGINT
+                REFERENCES bronze_objects(id)
             """)
             cur.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_bronze_unique_payload
