@@ -75,6 +75,33 @@ just report daily-station-trips jc JC115 2026-06-02
 just down
 ```
 
+## Airflow Operations
+
+`just up` also starts Airflow 3 at <http://localhost:8080>. Both recurring
+market schedules start disabled. Manual and backfill runs remain available
+while a recurring schedule is off.
+
+```bash
+# Enable or disable the recurring monthly schedule
+just schedule jc on
+just schedule jc off
+
+# Process the earliest incomplete month, one named month, or an inclusive range
+just run pipeline jc
+just run pipeline jc 2026-06
+just run pipeline jc 2021-01 2021-02
+
+# Inspect computed control-table coverage and Airflow run/task state
+just inspect coverage trips:jc
+just inspect runs jc
+```
+
+There is one monthly DAG per market. Jersey City starts at `2021-01` and New
+York starts at `2026-01`. Bronze and gold execute in-process; silver executes
+the unchanged Stage 1 recipe in a subprocess through Docker Compose. The gold
+task records each successful day and retries only incomplete days. Control
+records are written only after their corresponding Stage 1 job succeeds.
+
 ## Understanding the Pipeline
 
 ### Command Structure
@@ -133,9 +160,17 @@ Each market migrated independently:
 
 ### Quarantine Reasons
 
-Trips missing required fields are quarantined:
+Known source-data defects are quarantined with a stable, specific reason:
 
-- **`never_docked`**: Missing start_station_id, end_station_id, start_time, or end_time
+- `missing_start_station_id`
+- `missing_end_station_id`
+- `missing_start_time`
+- `invalid_start_time`
+- `missing_end_time`
+- `invalid_end_time`
+
+Unexpected programming and conversion errors are not turned into rejects; they
+fail the job and roll back the window.
 
 Note: Missing station *names* are **not** reasons for quarantine. Referential constraints (station ID not in inferred station list) are also **not** quarantine reasons.
 
@@ -143,9 +178,9 @@ Note: Missing station *names* are **not** reasons for quarantine. Referential co
 
 When a month appears multiple times in S3 (different export runs):
 
-1. Group by archive member timestamp
-2. Select the group with the latest timestamp
-3. Load all files from that export run
+1. Group matching members by source archive and parent folder
+2. Rank folders by their newest full member timestamp
+3. Load every matching member from exactly one newest folder
 
 This avoids:
 - Duplication (loading same month twice from different timestamps)
@@ -185,7 +220,9 @@ uv run pytest -m "not e2e"
 │   ├── db.py               # Database connection & schema
 │   ├── ingest.py           # Bronze layer (S3 fetch & load)
 │   ├── s3.py               # S3 listing & filtering
-│   ├── transform.py        # Silver & gold layers
+│   ├── silver.py           # Bronze-to-silver conformance
+│   ├── gold.py             # Silver-to-gold aggregation
+│   ├── transform.py        # Compatibility exports
 │   ├── trip.py             # Trip validation & normalization
 │   └── report.py           # Inspect & report functions
 │
@@ -237,7 +274,7 @@ Rejected trips with business reason:
 id BIGSERIAL PRIMARY KEY
 market TEXT
 window TEXT
-reason TEXT         -- e.g., "never_docked"
+reason TEXT         -- e.g., "missing_start_station_id"
 raw_row JSONB
 loaded_at TIMESTAMP
 ```

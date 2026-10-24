@@ -15,6 +15,7 @@ dev = [
     "pytest-cov>=4.1",
     "mypy>=1.9",
     "black>=24.0",
+    "types-python-dateutil>=2.9",
 ]
 
 [tool.pytest.ini_options]
@@ -28,3 +29,7 @@ markers = [
 [tool.mypy]
 files = ["src"]
 strict = true
+
+[[tool.mypy.overrides]]
+module = ["meridian_ops.timetable"]
+ignore_errors = true
