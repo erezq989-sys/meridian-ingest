@@ -1,4 +1,5 @@
 """Pytest configuration."""
+
 import os
 from pathlib import Path
 
@@ -10,9 +11,9 @@ from tests.warehouse import Warehouse
 
 
 def _project_volume_name() -> str:
-    """Return the Docker volume name used for bronze data."""
+    """Return the Docker volume that stores the Stage 1 warehouse."""
     project_name = "meridian-ingest"
-    return f"{project_name}_bronze_data"
+    return f"{project_name}_postgres_data"
 
 
 def _running_in_container() -> bool:
@@ -24,7 +25,9 @@ def _running_in_container() -> bool:
 def test_db_init():
     """Initialize test database at session start."""
     # Use the Compose service name from inside the app container.
-    os.environ.setdefault("PGHOST", "postgres" if _running_in_container() else "localhost")
+    os.environ.setdefault(
+        "PGHOST", "postgres" if _running_in_container() else "localhost"
+    )
     os.environ.setdefault("PGPORT", "5432")
     os.environ.setdefault("PGUSER", "meridian")
     os.environ.setdefault("PGPASSWORD", "meridian")
@@ -45,8 +48,8 @@ def dsn() -> str:
 
 
 @pytest.fixture
-def bronze_volume() -> str:
-    """The Docker volume used for the bronze layer data."""
+def warehouse_volume() -> str:
+    """The Docker volume used by the warehouse."""
     return _project_volume_name()
 
 
@@ -57,13 +60,17 @@ def warehouse() -> Warehouse:
 
 
 @pytest.fixture
-def restored_stack() -> None:
+def restored_stack(warehouse: Warehouse) -> None:
     """Ensure the Compose stack is in a clean, started state for each test."""
     if _running_in_container():
-        pytest.skip("stack lifecycle tests are managed by the outer Docker Compose process")
+        pytest.skip(
+            "stack lifecycle tests are managed by the outer Docker Compose process"
+        )
     just_down()
+    warehouse.reset()
     result = just_up()
     assert result.exit_code == 0, result.describe()
     yield
     # Leave the stack available for integration tests that run later in the suite.
     just_up()
+    warehouse.reset()

@@ -1,4 +1,3 @@
-
 """Landing windows through the interface, at most once per session.
 
 A window costs a download — 2018-04 is a 1.34 GB archive — so the suite lands each coordinate
@@ -33,3 +32,7 @@ class Warehouse:
 
     def gold(self, fact: str, day: str) -> None:
         self._once("transform-to-gold", fact, day)
+
+    def reset(self) -> None:
+        """Forget cached coordinates after a destructive stack reset."""
+        self._done.clear()

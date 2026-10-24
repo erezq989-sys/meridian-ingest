@@ -9,42 +9,18 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
-
-
-def _find_executable(name: str, candidates: Sequence[str]) -> str:
-    """Return an executable path or a fallback command name."""
-    found = shutil.which(name)
-    if found:
-        return found
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            return candidate
-    return name
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parents[1]
 
 
 def _docker_executable() -> str:
-    return _find_executable(
-        "docker",
-        [
-            r"C:\Program Files\Docker\Docker\resources\bin\docker.exe",
-            r"C:\Program Files\Docker\Docker\Docker.exe",
-        ],
-    )
+    return shutil.which("docker") or "docker"
 
 
 def _just_executable() -> str:
-    return _find_executable(
-        "just",
-        [
-            r"C:\Users\erezq\AppData\Local\Microsoft\WinGet\Links\just.exe",
-            r"C:\Users\erezq\AppData\Local\Programs\just\just.exe",
-        ],
-    )
+    return shutil.which("just") or "just"
 
 
 @dataclass
@@ -64,7 +40,15 @@ class CommandResult:
 def _run(cmd: list[str]) -> CommandResult:
     env = os.environ.copy()
     env.setdefault("COMPOSE_PROJECT_NAME", "meridian-ingest")
-    proc = subprocess.run(cmd, cwd=_repo_root(), capture_output=True, text=True, env=env)
+    proc = subprocess.run(
+        cmd,
+        cwd=_repo_root(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
     return CommandResult(
         exit_code=proc.returncode,
         stdout=proc.stdout,
@@ -95,7 +79,9 @@ def just_inspect(layer: str, job: str, window: str) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
-def just_report(question: str, market: str, station: str, day: str) -> dict[str, object]:
+def just_report(
+    question: str, market: str, station: str, day: str
+) -> dict[str, object]:
     """Run a project report and decode its JSON response."""
     result = _run([_just_executable(), "report", question, market, station, day])
     assert result.exit_code == 0, result.describe()

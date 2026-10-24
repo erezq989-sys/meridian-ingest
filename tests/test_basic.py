@@ -1,4 +1,5 @@
 """Tests for the pipeline."""
+
 import json
 import pytest
 from datetime import datetime
@@ -12,19 +13,23 @@ def clean_db():
     db.init_schema()
     with db.get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE bronze_trips, silver_trips, quarantine, station_daily_trips")
+            cur.execute(
+                "TRUNCATE bronze_trips, silver_trips, quarantine, station_daily_trips"
+            )
     yield
     # Cleanup: truncate tables
     with db.get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE bronze_trips, silver_trips, quarantine, station_daily_trips")
+            cur.execute(
+                "TRUNCATE bronze_trips, silver_trips, quarantine, station_daily_trips"
+            )
 
 
 def test_schema_detection():
     """Test schema version detection."""
     old_headers = ["start station id", "start station name", "Start Time"]
     new_headers = ["start_station_id", "start_station_name", "start_time"]
-    
+
     assert trip.detect_schema(old_headers) == "old"
     assert trip.detect_schema(new_headers) == "new"
 
@@ -37,7 +42,7 @@ def test_normalize_old_schema():
         "starttime": "2026-06-02 08:00:00",
         "stoptime": "2026-06-02 08:15:00",
     }
-    
+
     normalized = trip.normalize_row(old_row, "old")
     assert normalized["start_station_id"] == "JC115"
     assert normalized["end_station_id"] == "JC116"
@@ -51,7 +56,7 @@ def test_validate_trip_valid():
         "start_time": "2026-06-02 08:00:00",
         "stop_time": "2026-06-02 08:15:00",
     }
-    
+
     # Should not raise
     trip.validate_trip(valid_trip)
 
@@ -64,7 +69,7 @@ def test_validate_trip_missing_station():
         "start_time": "2026-06-02 08:00:00",
         "stop_time": "2026-06-02 08:15:00",
     }
-    
+
     with pytest.raises(trip.TripValidationError):
         trip.validate_trip(invalid_trip)
 
@@ -97,18 +102,24 @@ def test_inspect_silver_with_quarantine(clean_db):
                 INSERT INTO bronze_trips (market, "window", source_key, source_timestamp, raw_row)
                 VALUES (%s, %s, %s, %s, %s)
                 """,
-                ("jc", "2026-06", "test.zip", datetime.now(), json.dumps({"test": "data"}))
+                (
+                    "jc",
+                    "2026-06",
+                    "test.zip",
+                    datetime.now(),
+                    json.dumps({"test": "data"}),
+                ),
             )
-            
+
             # Manually insert a quarantine
             cur.execute(
                 """
                 INSERT INTO quarantine (market, "window", reason, raw_row)
                 VALUES (%s, %s, %s, %s)
                 """,
-                ("jc", "2026-06", "never_docked", json.dumps({"test": "data"}))
+                ("jc", "2026-06", "never_docked", json.dumps({"test": "data"})),
             )
-    
+
     result = report.inspect_silver("jc", "2026-06")
     assert result["layer"] == "silver"
     assert result["rejects"] == 1

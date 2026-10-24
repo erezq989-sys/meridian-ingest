@@ -2,31 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import socket
 import subprocess
 from urllib.parse import urlparse
 
 
-def _find_executable(name: str, candidates: list[str]) -> str:
-    found = shutil.which(name)
-    if found:
-        return found
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            return candidate
-    return name
-
-
 def _docker_executable() -> str:
-    return _find_executable(
-        "docker",
-        [
-            r"C:\Program Files\Docker\Docker\resources\bin\docker.exe",
-            r"C:\Program Files\Docker\Docker\Docker.exe",
-        ],
-    )
+    return shutil.which("docker") or "docker"
 
 
 def _parse_dsn(dsn: str) -> tuple[str, int]:
@@ -64,6 +47,8 @@ def volume_exists(volume_name: str) -> bool:
         [_docker_executable(), "volume", "inspect", volume_name],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return proc.returncode == 0
 
