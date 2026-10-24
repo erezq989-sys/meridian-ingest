@@ -1,153 +1,122 @@
-"""Command-line interface."""
+"""Command-line interface over independently callable pipeline jobs."""
+
+from __future__ import annotations
+
 import json
+import re
 import sys
+from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
-from meridian import db, ingest, transform, report
+from meridian import gold, ingest, report, silver
+
+_MONTH = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+_DAY = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
+_MARKETS = {"jc", "nyc"}
 
 
-def validate_window_grain(layer: str, job: str, window: str) -> None:
-    """Validate that window grain matches job type."""
-    # Extract job type
+class CliUsageError(ValueError):
+    """Invalid CLI coordinates or command shape."""
+
+
+def _valid_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def parse_trip_job(job: str) -> str:
+    """Return the market encoded by a supported trips job."""
+    prefix, separator, market = job.partition(":")
+    if prefix != "trips" or not separator or market not in _MARKETS:
+        raise CliUsageError(f"expected trips:jc or trips:nyc, got {job}")
+    return market
+
+
+def validate_window_grain(job: str, window: str) -> None:
+    """Validate a coordinate at the job's declared grain."""
     if job.startswith("trips:"):
-        # trips jobs expect YYYY-MM (monthly)
-        if len(window) != 7 or window[4] != "-":
-            print(f"ERROR: trips job requires monthly window (YYYY-MM), got {window}", file=sys.stderr)
-            sys.exit(1)
-    elif job == "station-daily":
-        # station-daily job expects YYYY-MM-DD (daily)
-        if len(window) != 10 or window[4] != "-" or window[7] != "-":
-            print(f"ERROR: station-daily job requires daily window (YYYY-MM-DD), got {window}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        print(f"ERROR: Unknown job {job}", file=sys.stderr)
-        sys.exit(1)
-
-
-def output_json(data: dict[str, Any]) -> None:
-    """Output a JSON object to stdout."""
-    print(json.dumps(data, default=str))
+        parse_trip_job(job)
+        if not _MONTH.fullmatch(window) or not _valid_date(f"{window}-01"):
+            raise CliUsageError(
+                f"trips job requires monthly window (YYYY-MM), got {window}"
+            )
+        return
+    if job == "station-daily":
+        if not _DAY.fullmatch(window) or not _valid_date(window):
+            raise CliUsageError(
+                f"station-daily job requires daily window (YYYY-MM-DD), got {window}"
+            )
+        return
+    raise CliUsageError(f"unknown job {job}")
 
 
 def run(layer: str, job: str, window: str) -> None:
-    """Run a job."""
-    validate_window_grain(layer, job, window)
-    
+    """Run one layer without terminating the calling Python process."""
+    validate_window_grain(job, window)
     if layer == "ingest-to-bronze":
-        if not job.startswith("trips:"):
-            print(f"ERROR: ingest expects trips job", file=sys.stderr)
-            sys.exit(1)
-        market = job.split(":")[1]
-        db.init_schema()
-        ingest.ingest_to_bronze(market, window)
-    
-    elif layer == "transform-to-silver":
-        if not job.startswith("trips:"):
-            print(f"ERROR: silver transform expects trips job", file=sys.stderr)
-            sys.exit(1)
-        market = job.split(":")[1]
-        db.init_schema()
-        transform.transform_to_silver(market, window)
-    
-    elif layer == "transform-to-gold":
+        ingest.ingest_to_bronze(parse_trip_job(job), window)
+        return
+    if layer == "transform-to-silver":
+        silver.transform_to_silver(parse_trip_job(job), window)
+        return
+    if layer == "transform-to-gold":
         if job != "station-daily":
-            print(f"ERROR: gold transform expects station-daily job", file=sys.stderr)
-            sys.exit(1)
-        db.init_schema()
-        # Detect markets that have silver data for this day
-        # Then transform to gold for each market
-        day_date = window  # window is already validated to be YYYY-MM-DD
-        with db.get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT market FROM silver_trips
-                    WHERE DATE(start_time) = %s OR DATE(end_time) = %s
-                    UNION
-                    SELECT market FROM station_daily_trips WHERE day = %s
-                    """,
-                    (day_date, day_date, day_date)
-                )
-                markets = [row[0] for row in cur.fetchall()]
-        
-        if markets:
-            for market in markets:
-                transform.transform_to_gold(market, window)
-        # If no silver data exists for this day, that's OK - just no gold to build
-    
-    else:
-        print(f"ERROR: Unknown layer {layer}", file=sys.stderr)
-        sys.exit(1)
+            raise CliUsageError("gold transform expects station-daily job")
+        gold.transform_to_gold(window)
+        return
+    raise CliUsageError(f"unknown layer {layer}")
 
 
-def inspect(layer: str, job: str, window: str) -> None:
-    """Inspect a layer."""
-    validate_window_grain(layer, job, window)
-    
-    db.init_schema()
-    
+def inspect(layer: str, job: str, window: str) -> dict[str, Any]:
+    """Read one layer coordinate without running migrations or transformations."""
+    validate_window_grain(job, window)
+    market = parse_trip_job(job)
     if layer == "bronze":
-        if not job.startswith("trips:"):
-            print(f"ERROR: inspect bronze expects trips job", file=sys.stderr)
-            sys.exit(1)
-        market = job.split(":")[1]
-        result = report.inspect_bronze(market, window)
-    
-    elif layer == "silver":
-        if not job.startswith("trips:"):
-            print(f"ERROR: inspect silver expects trips job", file=sys.stderr)
-            sys.exit(1)
-        market = job.split(":")[1]
-        result = report.inspect_silver(market, window)
-    
-    else:
-        print(f"ERROR: Cannot inspect {layer}", file=sys.stderr)
-        sys.exit(1)
-    
-    output_json(result)
+        return report.inspect_bronze(market, window)
+    if layer == "silver":
+        return report.inspect_silver(market, window)
+    raise CliUsageError(f"cannot inspect {layer}")
 
 
-def report_cmd(question: str, market: str, station: str, day: str) -> None:
-    """Report a business question."""
+def report_answer(question: str, market: str, station: str, day: str) -> dict[str, Any]:
+    """Answer a supported business question."""
     if question != "daily-station-trips":
-        print(f"ERROR: Unknown question {question}", file=sys.stderr)
-        sys.exit(1)
-    
-    db.init_schema()
-    result = report.report_daily_station_trips(market, station, day)
-    output_json(result)
+        raise CliUsageError(f"unknown question {question}")
+    if market not in _MARKETS:
+        raise CliUsageError(f"unknown market {market}")
+    if not _DAY.fullmatch(day) or not _valid_date(day):
+        raise CliUsageError(f"daily report requires YYYY-MM-DD, got {day}")
+    return report.report_daily_station_trips(market, station, day)
 
 
-def main() -> None:
-    """Main CLI entry point."""
-    if len(sys.argv) < 2:
-        print("Usage: meridian run|inspect|report ...", file=sys.stderr)
-        sys.exit(1)
-    
-    command = sys.argv[1]
-    
-    if command == "run":
-        if len(sys.argv) != 5:
-            print(f"Usage: meridian run <layer> <job> <window>", file=sys.stderr)
-            sys.exit(1)
-        run(sys.argv[2], sys.argv[3], sys.argv[4])
-    
-    elif command == "inspect":
-        if len(sys.argv) != 5:
-            print(f"Usage: meridian inspect <layer> <job> <window>", file=sys.stderr)
-            sys.exit(1)
-        inspect(sys.argv[2], sys.argv[3], sys.argv[4])
-    
-    elif command == "report":
-        if len(sys.argv) != 6:
-            print(f"Usage: meridian report <question> <market> <station> <day>", file=sys.stderr)
-            sys.exit(1)
-        report_cmd(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
-    
-    else:
-        print(f"ERROR: Unknown command {command}", file=sys.stderr)
-        sys.exit(1)
+def _json(data: dict[str, Any]) -> None:
+    print(json.dumps(data, default=str))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Parse process arguments; only this boundary converts errors to exit codes."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    try:
+        if len(args) == 4 and args[0] == "run":
+            run(args[1], args[2], args[3])
+            return 0
+        if len(args) == 4 and args[0] == "inspect":
+            _json(inspect(args[1], args[2], args[3]))
+            return 0
+        if len(args) == 5 and args[0] == "report":
+            _json(report_answer(args[1], args[2], args[3], args[4]))
+            return 0
+        raise CliUsageError(
+            "usage: meridian run|inspect|report with the documented arguments"
+        )
+    except CliUsageError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

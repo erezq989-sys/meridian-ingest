@@ -1,4 +1,5 @@
 """Database connection and schema management."""
+
 import os
 from contextlib import contextmanager
 from typing import Any, Generator
@@ -66,12 +67,13 @@ def init_schema() -> None:
                 ADD COLUMN IF NOT EXISTS bronze_object_id BIGINT
                 REFERENCES bronze_objects(id)
             """)
-            cur.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_bronze_unique_payload
-                ON bronze_trips (market, "window", source_key, source_timestamp, ((raw_row)::text))
-            """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_bronze_market_window ON bronze_trips (market, \"window\")")
-            
+            # Window replacement provides idempotency. A payload-level unique
+            # index would incorrectly discard legitimate identical source rows.
+            cur.execute("DROP INDEX IF EXISTS idx_bronze_unique_payload")
+            cur.execute(
+                'CREATE INDEX IF NOT EXISTS idx_bronze_market_window ON bronze_trips (market, "window")'
+            )
+
             # Silver layer: conformed trips
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS silver_trips (
@@ -90,9 +92,13 @@ def init_schema() -> None:
                     UNIQUE (market, "window", trip_id)
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_silver_market_window ON silver_trips (market, \"window\")")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_silver_times ON silver_trips (start_time, end_time)")
-            
+            cur.execute(
+                'CREATE INDEX IF NOT EXISTS idx_silver_market_window ON silver_trips (market, "window")'
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_silver_times ON silver_trips (start_time, end_time)"
+            )
+
             # Quarantine layer: rejected trips with reasons
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS quarantine (
@@ -104,9 +110,13 @@ def init_schema() -> None:
                     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_market_window ON quarantine (market, \"window\")")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_reason ON quarantine (reason)")
-            
+            cur.execute(
+                'CREATE INDEX IF NOT EXISTS idx_quarantine_market_window ON quarantine (market, "window")'
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_quarantine_reason ON quarantine (reason)"
+            )
+
             # Gold layer: station-day facts
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS station_daily_trips (
@@ -119,4 +129,6 @@ def init_schema() -> None:
                     UNIQUE (market, day, station_id)
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_gold_market_day ON station_daily_trips (market, day)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gold_market_day ON station_daily_trips (market, day)"
+            )
