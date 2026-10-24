@@ -1,109 +1,142 @@
-"""Trip data parsing and validation."""
+"""Canonical trip-row normalization and validation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 import dateutil.parser
 
+# Canonical field -> every normalized publisher header that has represented it.
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "trip_id": ("trip_id", "ride_id"),
+    "start_station_id": ("start_station_id",),
+    "start_station_name": ("start_station_name",),
+    "end_station_id": ("end_station_id",),
+    "end_station_name": ("end_station_name",),
+    "start_time": ("start_time", "starttime", "started_at"),
+    "end_time": ("end_time", "stop_time", "stoptime", "ended_at"),
+    "user_type": ("user_type", "usertype", "member_casual"),
+    "member_birth_year": ("member_birth_year", "birth_year"),
+    "member_gender": ("member_gender", "gender"),
+    "bike_id": ("bike_id", "bikeid"),
+}
 
-class TripValidationError(Exception):
-    """Raised when a trip row fails validation."""
-    def __init__(self, message: str, row: dict[str, Any]) -> None:
-        super().__init__(message)
-        self.message = message
+
+class TripValidationError(ValueError):
+    """A known source-data defect that belongs in quarantine."""
+
+    def __init__(
+        self,
+        reason: str,
+        row: dict[str, Any],
+        detail: str | None = None,
+    ) -> None:
+        super().__init__(detail or reason)
+        self.reason = reason
         self.row = row
 
 
+@dataclass(frozen=True)
+class ConformedTrip:
+    """Typed values ready for insertion into the silver layer."""
+
+    trip_id: str | None
+    start_station_id: str
+    end_station_id: str
+    start_time: datetime
+    end_time: datetime
+    user_type: str | None
+    member_birth_year: int | None
+    member_gender: int | None
+    bike_id: str | None
+
+
+def _header_name(header: str) -> str:
+    return header.strip().lower().replace(" ", "_")
+
+
 def detect_schema(headers: list[str]) -> str:
-    """
-    Detect schema version from CSV headers.
-    
-    Old schema (pre-migration): spaces in names like "start station id"
-    New schema (post-migration): underscores like "start_station_id"
-    """
-    # Check for new schema indicators
-    if "start_station_id" in headers:
+    """Identify the publisher era for diagnostics."""
+    lowered = {header.strip().lower() for header in headers}
+    if {"started_at", "ended_at", "ride_id", "start_station_id"} & lowered:
         return "new"
-    # Check for old schema indicators
-    if "start station id" in headers:
+    if {"starttime", "stoptime", "start station id"} & lowered:
         return "old"
-    # Fallback
     return "unknown"
 
 
-def normalize_row(row: dict[str, Any], schema: str) -> dict[str, Any]:
-    """
-    Normalize row to a consistent schema.
-    
-    Returns dict with canonical keys.
-    """
-    if schema == "old":
-        # Map old column names to new
-        mapping = {
-            "start station id": "start_station_id",
-            "start station name": "start_station_name",
-            "end station id": "end_station_id",
-            "end station name": "end_station_name",
-            "starttime": "start_time",
-            "stoptime": "stop_time",
-            "Start Time": "start_time",
-            "Stop Time": "stop_time",
-            "User Type": "user_type",
-            "Birth Year": "member_birth_year",
-            "Gender": "member_gender",
-            "Bike ID": "bike_id",
-        }
-        normalized = {}
-        for k, v in row.items():
-            normalized[mapping.get(k, k)] = v
-        return normalized
-    else:
-        # New schema or unknown: lowercase keys for consistency
-        return {k.lower().replace(" ", "_"): v for k, v in row.items()}
+def normalize_row(row: dict[str, Any], schema: str | None = None) -> dict[str, Any]:
+    """Map every supported publisher era into one canonical field set."""
+    del schema  # Detection is informative; aliases, not branches, drive conformance.
+    by_header = {_header_name(str(key)): value for key, value in row.items()}
+    normalized: dict[str, Any] = {}
+    for canonical, aliases in FIELD_ALIASES.items():
+        for alias in aliases:
+            if alias in by_header:
+                normalized[canonical] = by_header[alias]
+                break
+    return normalized
+
+
+def _required_text(row: dict[str, Any], field: str) -> str:
+    value = row.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise TripValidationError(f"missing_{field}", row)
+    return value.strip()
+
+
+def _required_time(row: dict[str, Any], field: str) -> datetime:
+    value = row.get(field)
+    if value is None or not str(value).strip():
+        raise TripValidationError(f"missing_{field}", row)
+    try:
+        return dateutil.parser.parse(str(value))
+    except (ValueError, TypeError, OverflowError) as error:
+        raise TripValidationError(
+            f"invalid_{field}", row, f"invalid {field}: {error}"
+        ) from error
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    """Coerce optional legacy demographics without rejecting an otherwise valid trip."""
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return int(float(text))
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def conform_trip(row: dict[str, Any]) -> ConformedTrip:
+    """Normalize and type one source row, raising only known validation defects."""
+    normalized = normalize_row(row, detect_schema(list(row)))
+    return ConformedTrip(
+        trip_id=_optional_text(normalized.get("trip_id")),
+        start_station_id=_required_text(normalized, "start_station_id"),
+        end_station_id=_required_text(normalized, "end_station_id"),
+        start_time=_required_time(normalized, "start_time"),
+        end_time=_required_time(normalized, "end_time"),
+        user_type=_optional_text(normalized.get("user_type")),
+        member_birth_year=_optional_int(normalized.get("member_birth_year")),
+        member_gender=_optional_int(normalized.get("member_gender")),
+        bike_id=_optional_text(normalized.get("bike_id")),
+    )
 
 
 def validate_trip(row: dict[str, Any]) -> None:
-    """
-    Validate that a trip row contains required fields.
-    
-    A row is valid if it has:
-    - start_station_id (not null, not empty)
-    - end_station_id (not null, not empty)
-    - start_time (parseable)
-    - end_time (parseable)
-    """
-    # Check start_station_id
-    start_id = row.get("start_station_id", "").strip() if isinstance(row.get("start_station_id"), str) else ""
-    if not start_id:
-        raise TripValidationError("never_docked: missing start_station_id", row)
-    
-    # Check end_station_id
-    end_id = row.get("end_station_id", "").strip() if isinstance(row.get("end_station_id"), str) else ""
-    if not end_id:
-        raise TripValidationError("never_docked: missing end_station_id", row)
-    
-    # Check start_time
-    start_time = row.get("start_time") or row.get("starttime")
-    if not start_time:
-        raise TripValidationError("never_docked: missing start_time", row)
-    
-    # Try to parse start_time
-    try:
-        _ = dateutil.parser.parse(str(start_time))
-    except Exception as e:
-        raise TripValidationError(f"never_docked: invalid start_time: {e}", row) from e
-    
-    # Check end_time
-    end_time = row.get("stop_time") or row.get("end_time")
-    if not end_time:
-        raise TripValidationError("never_docked: missing end_time", row)
-    
-    # Try to parse end_time
-    try:
-        _ = dateutil.parser.parse(str(end_time))
-    except Exception as e:
-        raise TripValidationError(f"never_docked: invalid end_time: {e}", row) from e
-
-
-def parse_trip_time(time_str: str) -> datetime:
-    """Parse trip time string to datetime."""
-    return dateutil.parser.parse(time_str)  # type: ignore
+    """Validate a canonical row while preserving the Stage 1 public API."""
+    normalized = normalize_row(row)
+    _required_text(normalized, "start_station_id")
+    _required_text(normalized, "end_station_id")
+    _required_time(normalized, "start_time")
+    _required_time(normalized, "end_time")

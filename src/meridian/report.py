@@ -1,4 +1,5 @@
 """Reporting and inspection functions."""
+
 import json
 from typing import Any
 
@@ -15,12 +16,12 @@ def inspect_bronze(market: str, window: str) -> dict[str, Any]:
                 FROM bronze_trips
                 WHERE market = %s AND "window" = %s
                 """,
-                (market, window)
+                (market, window),
             )
-            
+
             result = cur.fetchone()
             objects, rows = result if result else (0, 0)
-            
+
             return {
                 "layer": "bronze",
                 "job": f"trips:{market}",
@@ -41,12 +42,12 @@ def inspect_silver(market: str, window: str) -> dict[str, Any]:
                 FROM silver_trips
                 WHERE market = %s AND "window" = %s
                 """,
-                (market, window)
+                (market, window),
             )
-            
+
             row = cur.fetchone()
             rows = row[0] if row else 0
-            
+
             # Quarantine reasons
             cur.execute(
                 """
@@ -56,15 +57,15 @@ def inspect_silver(market: str, window: str) -> dict[str, Any]:
                 GROUP BY reason
                 ORDER BY count DESC
                 """,
-                (market, window)
+                (market, window),
             )
-            
+
             reasons = {}
             rejects = 0
             for reason, count in cur.fetchall():
                 reasons[reason] = count
                 rejects += count
-            
+
             return {
                 "layer": "silver",
                 "job": f"trips:{market}",
@@ -85,12 +86,12 @@ def report_daily_station_trips(market: str, station: str, day: str) -> dict[str,
                 FROM station_daily_trips
                 WHERE market = %s AND station_id = %s AND day = %s
                 """,
-                (market, station, day)
+                (market, station, day),
             )
-            
+
             result = cur.fetchone()
             departures, arrivals = result if result else (0, 0)
-            
+
             return {
                 "market": market,
                 "station": station,
